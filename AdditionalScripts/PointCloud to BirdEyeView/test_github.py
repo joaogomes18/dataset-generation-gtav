@@ -34,13 +34,16 @@ from matplotlib import colors
 import numpy as np
 from PIL import Image
 from math import sin, cos
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import math
 import argparse
 
 from numpy.testing._private.utils import clear_and_catch_warnings
 
 
 # basedir = 'C:/data/kitti/data_small/training' # windows
-basedir = '../../../MaterialHash_noBackground/GTAtoKITTI/kitti/training/'
+# basedir = '../../../MaterialHash_noBackground/GTAtoKITTI/kitti/training/'
+basedir = '../../../MaterialHash/GTAtoKITTI/kitti/training/'
 # basedir = '../../../KITTI/training/'
 # basedir = '../../../Diogo/training/'
 # basedir = '../../../Diogo/kitti/training/'
@@ -50,7 +53,10 @@ label = 'label_2'
 velodyne = 'velodyne'
 calib = 'calib'
 
-savedir = "../../../eyeball_test/all_train/"
+# savedir = "../../../eyeball_test/all_train/"
+# savedir = "../../../ground_truth_generator/all_val/"
+# savedir = "../../../ground_truth_generator/all_train/"
+savedir = "../../../ground_truth_generator/all/"
 # savedir = "../../../KITTI/all_train/"
 # savedir = "../../../Diogo/all_train/"
 # savedir = "../../../Diogo/all_training/"
@@ -223,25 +229,50 @@ def labelToBoundingBox(ax, labeld, calibd):
   
   hs = []
 
+  corners_3D_all = []
+
   for key in labeld.keys ():
     
-    color = 'white'
-    if key == 'Car':
-      color = 'red'
-    elif key == 'Pedestrian':
-      color = 'pink'
-    elif key == 'DontCare':
-      color = 'white'
+    # color = 'white'
+    # if key == 'Car':
+    #   color = 'red'
+    # elif key == 'Pedestrian':
+    #   color = 'pink'
+    # elif key == 'DontCare':
+    #   color = 'white'
     
    
     for o in range( labeld[key].shape[0]):
-      
+      truncation = labeld[key][o][1]
+      occlusion = labeld[key][o][2]
+
       #2D
       left   = labeld[key][o][3]
       bottom = labeld[key][o][4]
       width  = labeld[key][o][5]- labeld[key][o][3]
       height = labeld[key][o][6]- labeld[key][o][4]
-      
+
+      level = 0
+
+      if(height > 40 and truncation < 0.15 and occlusion == 0):
+        level = 0
+      elif(height > 25 and truncation < 0.30 and occlusion < 1):
+        level = 1
+      elif(height > 25 and truncation < 0.50 and occlusion < 2):
+        level = 2
+      else:
+        level = 3
+
+    if level == 0:
+      color = 'red'
+    elif level == 1:
+      color = 'blue'
+    elif level == 2:
+      color = 'green'
+    elif level == 2:
+      color = 'white'
+
+
       p = patches.Rectangle(
         (left, bottom), width, height, fill=False, edgecolor=color, linewidth=1)
       ax.add_patch(p)
@@ -258,12 +289,17 @@ def labelToBoundingBox(ax, labeld, calibd):
       y3d = labeld[key][o][11]
       z3d = labeld[key][o][12]
       yaw3d = labeld[key][o][13]
-      
+
+      try:
+        score = labeld[key][o][14]
+      except:
+        score = 1
    
-      if key != 'DontCare' :
+      if key == 'Car' and score > 0.7:
         
         corners_2D, corners_3D, paths_2D, ratio, h = computeBox3D(labeld[key][o], P2_rect)
-        # corners_2D, corners_3D, paths_2D, ratio, h = computeBox3D(labeld[key][o], P2_rect, height/ratio)
+        corners_2D, corners_3D, paths_2D, ratio, h = computeBox3D(labeld[key][o], P2_rect, height/ratio)
+        corners_3D_all.append(corners_3D)
         verts = paths_2D.T # corners_2D.T
         codes = [Path.LINETO]*verts.shape[0]
         codes[0] = Path.MOVETO
@@ -271,6 +307,8 @@ def labelToBoundingBox(ax, labeld, calibd):
         p = patches.PathPatch( pth, fill=False, color='purple', linewidth=2)
         ax.add_patch(p)
         hs.append(h)
+
+  
         
         
   
@@ -292,9 +330,101 @@ def labelToBoundingBox(ax, labeld, calibd):
 #   p = patches.Circle( (xpnd[0]/xpnd[2], xpnd[1]/xpnd[2]), fill=False, radius=3, color='red', linewidth=2)
 #   ax.add_patch(p)
   
-  return np.array(bb2d), np.array(bb3d), corners_3D, hs
+  return np.array(bb2d), np.array(bb3d), corners_3D_all, hs
 
-def pointCloudToBirdsEyeView(ax2, velo, bb3d):
+def labelToBoundingBox(labeld, calibd):
+  '''
+  Draw 2D and 3D bounding boxes.  
+  
+  Each label  file contains the following ( copied from devkit_object/matlab/readLabels.m)
+  #  % extract label, truncation, occlusion
+  #  lbl = C{1}(o);                   % for converting: cell -> string
+  #  objects(o).type       = lbl{1};  % 'Car', 'Pedestrian', ...
+  #  objects(o).truncation = C{2}(o); % truncated pixel ratio ([0..1])
+  #  objects(o).occlusion  = C{3}(o); % 0 = visible, 1 = partly occluded, 2 = fully occluded, 3 = unknown
+  #  objects(o).alpha      = C{4}(o); % object observation angle ([-pi..pi])
+  #
+  #  % extract 2D bounding box in 0-based coordinates
+  #  objects(o).x1 = C{5}(o); % left   -> in pixel
+  #  objects(o).y1 = C{6}(o); % top
+  #  objects(o).x2 = C{7}(o); % right
+  #  objects(o).y2 = C{8}(o); % bottom
+  #
+  #  % extract 3D bounding box information
+  #  objects(o).h    = C{9} (o); % box width    -> in object coordinate
+  #  objects(o).w    = C{10}(o); % box height
+  #  objects(o).l    = C{11}(o); % box length
+  #  objects(o).t(1) = C{12}(o); % location (x) -> in camera coordinate 
+  #  objects(o).t(2) = C{13}(o); % location (y)
+  #  objects(o).t(3) = C{14}(o); % location (z)
+  #  objects(o).ry   = C{15}(o); % yaw angle  -> rotation aroun the y/vetical axis
+  '''
+  
+  # Velodyne to/from referenece camera (0) matrix
+  Tr_velo_to_cam = np.zeros((4,4))
+  Tr_velo_to_cam[3,3] = 1
+  Tr_velo_to_cam[:3,:4] = calibd['Tr_velo_to_cam'].reshape(3,4)
+  #print ('Tr_velo_to_cam', Tr_velo_to_cam)
+  
+  Tr_cam_to_velo = np.linalg.inv(Tr_velo_to_cam)
+  #print ('Tr_cam_to_velo', Tr_cam_to_velo)
+  
+  # 
+  R0_rect = np.zeros ((4,4))
+  R0_rect[:3,:3] = calibd['R0_rect'].reshape(3,3)
+  R0_rect[3,3] = 1
+  #print ('R0_rect', R0_rect)
+  P2_rect = calibd['P2'].reshape(3,4)
+  #print('P2_rect', P2_rect)
+  
+  bb3d = []
+  bb2d = []
+  
+  hs = []
+
+  corners_3D_all = []
+
+  for key in labeld.keys ():
+    
+   
+    for o in range( labeld[key].shape[0]):
+      
+      #2D
+      left   = labeld[key][o][3]
+      bottom = labeld[key][o][4]
+      width  = labeld[key][o][5]- labeld[key][o][3]
+      height = labeld[key][o][6]- labeld[key][o][4]
+      
+      xc = (labeld[key][o][5]+labeld[key][o][3])/2
+      yc = (labeld[key][o][6]+labeld[key][o][4])/2
+      bb2d.append([xc,yc])
+      
+      #3D
+      w3d = labeld[key][o][7]
+      h3d = labeld[key][o][8]
+      l3d = labeld[key][o][9]
+      x3d = labeld[key][o][10]
+      y3d = labeld[key][o][11]
+      z3d = labeld[key][o][12]
+      yaw3d = labeld[key][o][13]
+
+      try:
+        score = labeld[key][o][14]
+      except:
+        score = 1
+   
+      if key != 'DontCare' and score > 0.7:
+        
+        corners_2D, corners_3D, paths_2D, ratio, h = computeBox3D(labeld[key][o], P2_rect)
+        corners_2D, corners_3D, paths_2D, ratio, h = computeBox3D(labeld[key][o], P2_rect, height/ratio)
+        corners_3D_all.append(corners_3D)
+        verts = paths_2D.T # corners_2D.T
+        codes = [Path.LINETO]*verts.shape[0]
+        hs.append(h)
+
+  return corners_3D_all
+
+def pointCloudToBirdsEyeView(ax2, velo):#, bb3d):
   ax2.set_xlim (-10,10)
   ax2.set_ylim (-5,35)
   hmax = velo[:,2].max()
@@ -312,9 +442,9 @@ def pointCloudToBirdsEyeView(ax2, velo, bb3d):
              norm=norm,
              marker = ".",
              )
-  ax2.scatter(-bb3d[:,1],
-             bb3d[:,0],
-             c='red')
+  # ax2.scatter(-bb3d[:,1],
+  #            bb3d[:,0],
+  #            c='red')
   ax2.set_facecolor('xkcd:grey')
   plt.colorbar(sc2)
 
@@ -329,12 +459,14 @@ def main ():
 
   # return
 
-  for frame in ["000000", "000001", "000150", "000205", "000775", "000808", "000871", "001584", "001599", "001955", "002738", "003473", "003592", "007328"]:
+  for frame in ["000076", "000058", "000042", "000040", "000039", "000031", "000028", "000027", "000020", "000015", "000008", "000005"]:
       left_cam, velo, label_data, calib_data = loadKittiFiles(frame)
       
-      print(label_data)
+      # print(label_data)
 
       f = plt.figure()
+
+      # f = plt.figure(figsize=plt.figaspect(0.5))
       
       # show the left camera image 
       ax = f.add_subplot(111)
@@ -343,17 +475,60 @@ def main ():
       
       bb2d, bb3d, corners3d, hs = labelToBoundingBox(ax, label_data, calib_data)
 
-      plt.title(frame)
-      plt.savefig(savedir+"/"+frame+"_withBB_github.png")
+      # corners3d = labelToBoundingBox(label_data, calib_data)
+      
+      corners3d = np.array(corners3d)
+
+      # print(corners3d.shape)
+      # print(corners3d)
+      # corners3d = corners3d.reshape([corners3d.shape[1],corners3d.shape[0]*corners3d.shape[2]])
+      # print(corners3d)
+      # print(corners3d.shape)
+
+      # return
+
+      # plt.title(frame)
+      # plt.savefig(savedir+"/"+frame+"_withBB_github.png")
 
 
       # plt.savefig("/home/joao/Desktop/Diogo/"+frame+"_withBB_github.png")
       
       # point cloud to bird's eye view scatter plot
       # ax2 = f.add_subplot(3,1,2, )#projection="3d" )
+      # ax2 = f.add_subplot(111)#projection="3d" )
+      # fig = plt.figure()
+      # ax = fig.add_subplot(projection='3d')
+      plt.title(frame)
       # pointCloudToBirdsEyeView(ax2, velo, bb3d)
 
-      # to_write = "ply\nformat ascii 1.0\nelement vertex " + str(velo.shape[0]+corners3d.shape[1]) +  "\nproperty float x\nproperty float y\nproperty float z\nproperty float intensity\nend_header\n"
+      # pointCloudToBirdsEyeView(ax2, velo)
+
+      # print(corners3d.shape)
+
+      # for x in range(corners3d.shape[0]):
+      #   corners3D_X = np.array([corners3d[x,2], corners3d[x,0]*-1, corners3d[x,1]*-1])
+      #   verts = [[corners3D_X[:,0], corners3D_X[:,1], corners3D_X[:,2], corners3D_X[:,3]],
+      #           [corners3D_X[:,4], corners3D_X[:,5], corners3D_X[:,6], corners3D_X[:,7]],
+      #           [corners3D_X[:,0], corners3D_X[:,1], corners3D_X[:,5], corners3D_X[:,4]],
+      #           [corners3D_X[:,2], corners3D_X[:,3], corners3D_X[:,7], corners3D_X[:,6]],
+      #           [corners3D_X[:,1], corners3D_X[:,2], corners3D_X[:,6], corners3D_X[:,5]],
+      #           [corners3D_X[:,4], corners3D_X[:,7], corners3D_X[:,3], corners3D_X[:,0]]]
+      #   ax.add_collection3d(Poly3DCollection(verts, linewidths=5, edgecolors='r'))
+
+        # break
+        # ax.add_patch(rect)
+
+      # ax.scatter(velo[:,0], velo[:,1], velo[:,2], s=1, marker = ".")
+
+      # ax.view_init(90-45, 90+45)
+
+      plt.grid(False)
+
+      plt.axis('off')
+
+      plt.show()
+
+      # to_write = "ply\nformat ascii 1.0\nelement vertex " + str(velo.shape[0]+corners3d.shape[2]*corners3d.shape[0]) +  "\nproperty float x\nproperty float y\nproperty float z\nproperty float intensity\nend_header\n"
       
       # x = velo[:,0]
       # y = velo[:,1]
@@ -363,8 +538,10 @@ def main ():
       # for i in range(velo.shape[0]):
       #     to_write += str(x[i]) + " " + str(y[i]) + " " + str(z[i]) + " " + str(r[i]) + "\n"
 
-      # for i in range(corners3d.shape[1]):
-      #     to_write += str(corners3d[0,i]) + " " + str(corners3d[1,i]) + " " + str(corners3d[2,i]) + " 1\n"
+      # for x in range(corners3d.shape[0]):
+      #   for i in range(corners3d.shape[2]):
+      #       to_write += str(corners3d[x,2,i]) + " " + str((corners3d[x,0,i])*-1) + " " + str((corners3d[x,1,i])*-1) + " 1\n"
+          
 
       # with open(savedir+"/"+frame+"_github.ply", "w") as f:
       # # with open("/home/joao/Desktop/Diogo/"+frame+"_github.ply", "w") as f:
